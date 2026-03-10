@@ -2,53 +2,27 @@ import pandas as pd
 import requests
 import os
 import io
-import math
 
 # =========================
-# CONFIG
+# CONFIGURAZIONE CACCIATORE
 # =========================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-SOGLIA_PREZZO = 2.10 # Alzata per includere le 100 ottani/speciali nel calcolo
-SOGLIA_MINIMA = 1.45 
-MAX_RESULTS = 10
+SOGLIA_ALLERTA = 1.50   # Ti avvisa solo se il prezzo è clamoroso (sotto 1.50)
+SOGLIA_ERRORE_MIN = 0.05 # Per evitare i finti 0.01€, ma beccare i 0.90€ o 1.10€
 
-# Coordinate di Mareno di Piave (TV)
-CASA_LAT = 45.8410
-CASA_LON = 12.3469
+# Province del Veneto
+PROVINCE_VENETO = ["TV", "VE", "PD", "VI", "VR", "BL", "RO"]
 
 URL_IMPIANTI = "https://www.mimit.gov.it/images/exportCSV/anagrafica_impianti_attivi.csv"
 URL_PREZZI = "https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv"
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# =========================
-# FUNZIONI
-# =========================
-def calcola_distanza(lat1, lon1):
-    try:
-        lat1, lon1 = float(lat1), float(lon1)
-        R = 6371 
-        dlat = math.radians(lat1 - CASA_LAT)
-        dlon = math.radians(lon1 - CASA_LON)
-        a = math.sin(dlat / 2)**2 + math.cos(math.radians(CASA_LAT)) * math.cos(math.radians(lat1)) * math.sin(dlon / 2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-        return round(R * c, 1)
-    except:
-        return 999.0
-
 def get_type_emoji(carburante):
     c = carburante.lower()
     return "🟢" if "benzina" in c else "⚫"
-
-def get_price_color(prezzo, media):
-    # Verde se risparmi più del 2% rispetto alla media
-    if prezzo < media * 0.98: return "✅" 
-    # Rosso se paghi più del 2% rispetto alla media
-    if prezzo > media * 1.02: return "❌"
-    # Giallo se sei nel mezzo
-    return "⚠️"
 
 def send_msg(text):
     if not TOKEN or not CHAT_ID: return
@@ -57,6 +31,7 @@ def send_msg(text):
 
 def check():
     try:
+        # Scarico dati dal Ministero
         r_prezzi = requests.get(URL_PREZZI, headers=HEADERS, timeout=60)
         r_impianti = requests.get(URL_IMPIANTI, headers=HEADERS, timeout=60)
 
@@ -66,46 +41,47 @@ def check():
         df_prezzi.columns = df_prezzi.columns.str.strip()
         df_impianti.columns = df_impianti.columns.str.strip()
 
+        # Unione dati
         df = pd.merge(df_prezzi, df_impianti, on="idImpianto")
 
+        # Conversione prezzi
         df["prezzo"] = pd.to_numeric(df["prezzo"].str.replace(",", "."), errors="coerce")
-        df["distanza"] = df.apply(lambda x: calcola_distanza(x["Latitudine"], x["Longitudine"]), axis=1)
+        
+        # Filtro per le province del Veneto
+        df = df[df["Provincia"].isin(PROVINCE_VENETO)].copy()
 
+        # Filtro Carburanti (solo Benzina e Gasolio)
         mask = (df["descCarburante"].str.contains("Benzina|Gasolio|Artico|100 ottani", case=False, na=False) & 
                 ~df["descCarburante"].str.contains("Metano|GPL|LPG", case=False, na=False))
-        
         df = df[mask].copy()
 
-        # Filtro zona Mareno (40km) e prezzi sensati
-        offerte = df[(df["prezzo"] < SOGLIA_PREZZO) & (df["prezzo"] > SOGLIA_MINIMA) & (df["distanza"] < 40)].copy()
-        
+        # TROVA I PREZZI BASSISSIMI (Sotto 1.50)
+        offerte = df[(df["prezzo"] <= SOGLIA_ALLERTA) & (df["prezzo"] >= SOGLIA_ERRORE_MIN)].copy()
+        offerte = offerte.sort_values("prezzo")
+
         if offerte.empty:
-            send_msg("✅ Nessun dato disponibile in zona.")
+            # Opzionale: decommenta la riga sotto se vuoi un messaggio di conferma ogni 30 min anche se non trova nulla
+            # send_msg("✅ Scansione Veneto completata: nessun prezzo sotto 1.50€.")
+            print("Nessuna anomalia trovata.")
             return
 
-        # Calcoliamo la media della zona per il confronto
-        media_zona = offerte["prezzo"].mean()
-
-        # Ordiniamo per distanza
-        offerte = offerte.sort_values("distanza")
-
-        msg = f"📊 REPORT CARBURANTI (Mareno +40km)\n"
-        msg += f"Media zona: {round(media_zona, 3)}€\n"
-        msg += f"(Legenda: ✅ Ottimo | ⚠️ Medio | ❌ Caro)\n\n"
+        msg = f"🚨 ALLERTA PREZZO VENETO! 🚨\n"
+        msg += f"Trovati {len(offerte)} distributori sotto {SOGLIA_ALLERTA}€\n\n"
         
-        for _, row in offerte.head(MAX_RESULTS).iterrows():
-            type_emoji = get_type_emoji(row["descCarburante"])
-            price_status = get_price_color(row["prezzo"], media_zona)
-            
-            msg += (f"{type_emoji} {row['descCarburante']}\n"
-                    f"{price_status} PREZZO: {row['prezzo']}€\n"
-                    f"📏 {row['distanza']} km | {row.get('Nome Impianto', 'N/D')}\n"
-                    f"🏙️ {row['Comune']} ({row.get('Provincia', '??')})\n\n")
+        for _, row in offerte.iterrows():
+            emoji = get_type_emoji(row["descCarburante"])
+            msg += (f"{emoji} PREZZO: {row['prezzo']}€\n"
+                    f"⛽ {row['descCarburante']}\n"
+                    f"📍 {row.get('Nome Impianto', 'N/D')}\n"
+                    f"🏙️ {row['Comune']} ({row['Provincia']})\n"
+                    f"------------------------\n")
 
         send_msg(msg)
 
     except Exception as e:
-        send_msg(f"❌ Errore: {str(e)}")
+        print(f"Errore: {e}")
+        # Non inviamo l'errore su telegram ogni volta per non spammare se il MIMIT è giù
+        # send_msg(f"❌ Errore tecnico: {str(e)}")
 
 if __name__ == "__main__":
     check()
