@@ -5,7 +5,7 @@ import os
 # GitHub recupera i segreti che hai appena salvato
 TOKEN = os.getenv('8787419769:AAG7MWbjonEPF4E-xvueht5uD8-aoGeQw5M')
 CHAT_ID = os.getenv('6416960636')
-SOGLIA_ERRORE = 0.90 
+SOGLIA_ERRORE = 1.90 
 
 def send_msg(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -44,3 +44,4 @@ def check():
 
 if __name__ == "__main__":
     check()
+
