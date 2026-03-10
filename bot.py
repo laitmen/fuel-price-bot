@@ -9,7 +9,7 @@ import io
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-SOGLIA_ALLERTA = 1.50   
+SOGLIA_ALLERTA = 1.30   
 SOGLIA_ERRORE_MIN = 0.01 
 
 # Province del Nord-Est (Veneto, Trentino, Friuli)
@@ -88,4 +88,5 @@ def check():
 
 if __name__ == "__main__":
     check()
+
 
