@@ -13,6 +13,9 @@ def send_msg(text):
     requests.post(url, json=payload)
 
 def check():
+    send_msg("🚀 Test di connessione: Il bot è partito correttamente!") # Aggiungi questa riga
+    print("Scarico i dati...")
+    # ... resto del codice ...
     try:
         # URL ufficiali Ministero
         URL_IMPIANTI = "https://www.mimit.gov.it/images/stories/documenti/anagrafica_impianti_attivi.csv"
@@ -44,4 +47,5 @@ def check():
 
 if __name__ == "__main__":
     check()
+
 
