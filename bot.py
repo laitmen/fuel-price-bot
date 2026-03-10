@@ -10,8 +10,8 @@ import math
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-SOGLIA_PREZZO = 1.90
-SOGLIA_MINIMA = 1.45  # Per scartare i prezzi finti a 1 euro
+SOGLIA_PREZZO = 2.10 # Alzata per includere le 100 ottani/speciali nel calcolo
+SOGLIA_MINIMA = 1.45 
 MAX_RESULTS = 10
 
 # Coordinate di Mareno di Piave (TV)
@@ -24,12 +24,12 @@ URL_PREZZI = "https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # =========================
-# FUNZIONI AUSILIARIE
+# FUNZIONI
 # =========================
 def calcola_distanza(lat1, lon1):
     try:
         lat1, lon1 = float(lat1), float(lon1)
-        R = 6371  # Raggio Terra km
+        R = 6371 
         dlat = math.radians(lat1 - CASA_LAT)
         dlon = math.radians(lon1 - CASA_LON)
         a = math.sin(dlat / 2)**2 + math.cos(math.radians(CASA_LAT)) * math.cos(math.radians(lat1)) * math.sin(dlon / 2)**2
@@ -38,22 +38,25 @@ def calcola_distanza(lat1, lon1):
     except:
         return 999.0
 
-def get_emoji(carburante):
+def get_type_emoji(carburante):
     c = carburante.lower()
-    if "benzina" in c:
-        return "🟢" # Verde per Benzina
-    elif "gasolio" in c or "diesel" in c:
-        return "⚫" # Nero per Gasolio
-    return "⛽"
+    return "🟢" if "benzina" in c else "⚫"
+
+def get_price_color(prezzo, media):
+    # Verde se risparmi più del 2% rispetto alla media
+    if prezzo < media * 0.98: return "✅" 
+    # Rosso se paghi più del 2% rispetto alla media
+    if prezzo > media * 1.02: return "❌"
+    # Giallo se sei nel mezzo
+    return "⚠️"
 
 def send_msg(text):
     if not TOKEN or not CHAT_ID: return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=15)
 
 def check():
     try:
-        # Download
         r_prezzi = requests.get(URL_PREZZI, headers=HEADERS, timeout=60)
         r_impianti = requests.get(URL_IMPIANTI, headers=HEADERS, timeout=60)
 
@@ -63,44 +66,41 @@ def check():
         df_prezzi.columns = df_prezzi.columns.str.strip()
         df_impianti.columns = df_impianti.columns.str.strip()
 
-        # Merge
         df = pd.merge(df_prezzi, df_impianti, on="idImpianto")
 
-        # Conversione dati
         df["prezzo"] = pd.to_numeric(df["prezzo"].str.replace(",", "."), errors="coerce")
         df["distanza"] = df.apply(lambda x: calcola_distanza(x["Latitudine"], x["Longitudine"]), axis=1)
 
-        # Filtro Tipi (Benzina e Gasolio)
         mask = (df["descCarburante"].str.contains("Benzina|Gasolio|Artico|100 ottani", case=False, na=False) & 
                 ~df["descCarburante"].str.contains("Metano|GPL|LPG", case=False, na=False))
         
         df = df[mask].copy()
 
-        # Filtro Finale (Entro 40km e prezzo realistico)
-        offerte = df[(df["prezzo"] < SOGLIA_PREZZO) & 
-                    (df["prezzo"] > SOGLIA_MINIMA) & 
-                    (df["distanza"] < 40)].copy()
+        # Filtro zona Mareno (40km) e prezzi sensati
+        offerte = df[(df["prezzo"] < SOGLIA_PREZZO) & (df["prezzo"] > SOGLIA_MINIMA) & (df["distanza"] < 40)].copy()
         
-        # ORDINAMENTO PER DISTANZA (i più vicini a Mareno per primi)
-        offerte = offerte.sort_values("distanza")
-
         if offerte.empty:
-            send_msg(f"✅ Nessuna offerta rilevata entro 40km da Mareno di Piave.")
+            send_msg("✅ Nessun dato disponibile in zona.")
             return
 
-        msg = f"📍 DISTRIBUTORI VICINI A TE\n(Ordinati per distanza)\n\n"
+        # Calcoliamo la media della zona per il confronto
+        media_zona = offerte["prezzo"].mean()
+
+        # Ordiniamo per distanza
+        offerte = offerte.sort_values("distanza")
+
+        msg = f"📊 REPORT CARBURANTI (Mareno +40km)\n"
+        msg += f"Media zona: {round(media_zona, 3)}€\n"
+        msg += f"(Legenda: ✅ Ottimo | ⚠️ Medio | ❌ Caro)\n\n"
         
         for _, row in offerte.head(MAX_RESULTS).iterrows():
-            emoji = get_emoji(row["descCarburante"])
-            nome = row.get("Nome Impianto", row.get("nomeImpianto", "Sconosciuto"))
-            comune = row.get("Comune", "N/D")
-            dist = row["distanza"]
-            prezzo = row["prezzo"]
-            tipo = row["descCarburante"]
+            type_emoji = get_type_emoji(row["descCarburante"])
+            price_status = get_price_color(row["prezzo"], media_zona)
             
-            msg += (f"{emoji} {prezzo}€ - {tipo}\n"
-                    f"📏 {dist} km | {nome}\n"
-                    f"🏙️ {comune} ({row.get('Provincia', '??')})\n\n")
+            msg += (f"{type_emoji} {row['descCarburante']}\n"
+                    f"{price_status} PREZZO: {row['prezzo']}€\n"
+                    f"📏 {row['distanza']} km | {row.get('Nome Impianto', 'N/D')}\n"
+                    f"🏙️ {row['Comune']} ({row.get('Provincia', '??')})\n\n")
 
         send_msg(msg)
 
