@@ -17,7 +17,7 @@ def check():
     print("Scarico i dati...")
     # ... resto del codice ...
     try:
-        # URL ufficiali Ministero
+        # URL aggiornati e stabili del Ministero
         URL_IMPIANTI = "https://www.mimit.gov.it/images/stories/documenti/anagrafica_impianti_attivi.csv"
         URL_PREZZI = "https://www.mimit.gov.it/images/stories/documenti/prezzi_alle_comunicazioni.csv"
         
@@ -47,5 +47,6 @@ def check():
 
 if __name__ == "__main__":
     check()
+
 
 
