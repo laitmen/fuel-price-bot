@@ -3,66 +3,199 @@ import requests
 import os
 import io
 
-TOKEN = os.getenv('TELEGRAM_TOKEN')
-CHAT_ID = os.getenv('CHAT_ID')
-SOGLIA_ERRORE = 1.90 
+# =========================
+# CONFIG
+# =========================
+
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+SOGLIA_PREZZO = 1.90
+MAX_RESULTS = 5
+
+URL_IMPIANTI = "https://www.mimit.gov.it/images/exportCSV/anagrafica_impianti_attivi.csv"
+URL_PREZZI = "https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "text/csv"
+}
+
+
+# =========================
+# TELEGRAM
+# =========================
 
 def send_msg(text):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
-    except:
-        pass
 
-def check():
-    # Usiamo questi nuovi link che puntano direttamente allo storage dei dati
-    URL_IMPIANTI = "https://www.mimit.gov.it/images/stories/documenti/anagrafica_impianti_attivi.csv"
-    URL_PREZZI = "https://www.mimit.gov.it/images/stories/documenti/prezzi_alle_comunicazioni.csv"
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/csv'
+    if not TOKEN or not CHAT_ID:
+        print("Token o ChatID mancanti")
+        return
+
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text
     }
 
     try:
-        print("Tentativo scaricamento dati...")
-        
-        # Scarichiamo i prezzi
-        r_prezzi = requests.get(URL_PREZZI, headers=headers, timeout=30)
-        # Scarichiamo l'anagrafica
-        r_impianti = requests.get(URL_IMPIANTI, headers=headers, timeout=30)
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print("Errore Telegram:", e)
 
-        if r_prezzi.status_code != 200:
-            send_msg(f"⚠️ Il Ministero è in manutenzione (Errore {r_prezzi.status_code}). Riprovo tra 30 minuti.")
-            return
 
-        # Carichiamo i dati in memoria
-        df_prezzi = pd.read_csv(io.BytesIO(r_prezzi.content), sep=';', skiprows=1, on_bad_lines='skip')
-        df_impianti = pd.read_csv(io.BytesIO(r_impianti.content), sep=';', skiprows=1, on_bad_lines='skip')
+# =========================
+# DOWNLOAD DATASET
+# =========================
 
-        # Pulizia e Unione
-        df_prezzi.columns = df_prezzi.columns.str.strip()
-        df_impianti.columns = df_impianti.columns.str.strip()
-        
-        df = pd.merge(df_prezzi, df_impianti, on='idImpianto')
-        
-        # Convertiamo i prezzi (gestendo la virgola italiana)
-        df['prezzo'] = pd.to_numeric(df['prezzo'].astype(str).str.replace(',', '.'), errors='coerce')
-        
-        # Filtriamo per la tua soglia
-        offerte = df[df['prezzo'] < SOGLIA_ERRORE].copy()
-        
-        if not offerte.empty:
-            msg = f"⛽ TROVATE {len(offerte)} OFFERTE!\n\n"
-            # Prendiamo i primi 5 risultati
-            for _, row in offerte.head(5).iterrows():
-                msg += f"📍 {row['NomeImpianto']} ({row['Comune']})\n💰 {row['prezzo']}€ - {row['descCarburante']}\n\n"
-            send_msg(msg)
-        else:
-            send_msg(f"✅ Scansione completata: nessun prezzo sotto {SOGLIA_ERRORE}€.")
+def download_csv(url):
+
+    r = requests.get(url, headers=HEADERS, timeout=60)
+
+    if r.status_code != 200:
+        raise Exception(f"Errore download {url} -> {r.status_code}")
+
+    return r.content
+
+
+# =========================
+# LOAD DATA
+# =========================
+
+def load_data():
+
+    print("Scaricamento dataset MIMIT...")
+
+    prezzi_raw = download_csv(URL_PREZZI)
+    impianti_raw = download_csv(URL_IMPIANTI)
+
+    print("Parsing CSV...")
+
+    df_prezzi = pd.read_csv(
+        io.BytesIO(prezzi_raw),
+        sep="|",
+        skiprows=1,
+        on_bad_lines="skip",
+        dtype=str
+    )
+
+    df_impianti = pd.read_csv(
+        io.BytesIO(impianti_raw),
+        sep="|",
+        skiprows=1,
+        on_bad_lines="skip",
+        dtype=str
+    )
+
+    return df_prezzi, df_impianti
+
+
+# =========================
+# PROCESS DATA
+# =========================
+
+def process_data(df_prezzi, df_impianti):
+
+    print("Pulizia dati...")
+
+    df_prezzi.columns = df_prezzi.columns.str.strip()
+    df_impianti.columns = df_impianti.columns.str.strip()
+
+    print("Merge dataset...")
+
+    df = pd.merge(
+        df_prezzi,
+        df_impianti,
+        on="idImpianto",
+        how="inner"
+    )
+
+    print("Conversione prezzi...")
+
+    df["prezzo"] = (
+        df["prezzo"]
+        .astype(str)
+        .str.replace(",", ".")
+    )
+
+    df["prezzo"] = pd.to_numeric(
+        df["prezzo"],
+        errors="coerce"
+    )
+
+    return df
+
+
+# =========================
+# TROVA OFFERTE
+# =========================
+
+def find_offers(df):
+
+    offerte = df[df["prezzo"] < SOGLIA_PREZZO].copy()
+
+    offerte = offerte.sort_values("prezzo")
+
+    return offerte
+
+
+# =========================
+# FORMAT MESSAGGIO
+# =========================
+
+def build_message(offerte):
+
+    if offerte.empty:
+        return f"✅ Nessun prezzo sotto {SOGLIA_PREZZO}€"
+
+    msg = f"⛽ Offerte trovate ({len(offerte)})\n\n"
+
+    for _, row in offerte.head(MAX_RESULTS).iterrows():
+
+        nome = row.get("NomeImpianto", "N/D")
+        comune = row.get("Comune", "N/D")
+        carburante = row.get("descCarburante", "Carburante")
+        prezzo = row.get("prezzo", "N/D")
+
+        msg += (
+            f"📍 {nome} ({comune})\n"
+            f"💰 {prezzo}€ - {carburante}\n\n"
+        )
+
+    return msg
+
+
+# =========================
+# MAIN
+# =========================
+
+def check():
+
+    try:
+
+        df_prezzi, df_impianti = load_data()
+
+        df = process_data(df_prezzi, df_impianti)
+
+        offerte = find_offers(df)
+
+        msg = build_message(offerte)
+
+        send_msg(msg)
+
+        print("Completato")
 
     except Exception as e:
-        send_msg(f"❌ Errore imprevisto: {str(e)}")
+
+        err = f"❌ Errore bot carburanti:\n{str(e)}"
+
+        print(err)
+
+        send_msg(err)
+
+
+# =========================
 
 if __name__ == "__main__":
     check()
